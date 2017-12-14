@@ -10,10 +10,10 @@ const INTEGER = 'I'
 export const VALUE = 'V'
 export const INDEX = 'I'
 
-export let WRITE_OFFSET = -1
-export let READ_OFFSET = -2
+export let WRITE_OFFSET = 0 // bylo -1
+export let READ_OFFSET = -1 // bylo -2
 
-export function getVariables(func,what = ALL,url='./../config/xml.cgi',vars='A|1|500|D|1|500') {
+export function getVariables(func,what = ALL,url='./../config/xml.cgi',vars='A|1|100|D|1|100') {
      new window.Promise((resolve,reject) => {
         let xhr = new window.XMLHttpRequest();
         xhr.open('GET', `${url}?N|${vars}`, true);

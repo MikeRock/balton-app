@@ -40,7 +40,7 @@ class TableItemStateVar extends Component {
     }
     render() {
     let {write, name, main, names, options, value, unmod} = this.props   
-    let selected = unmod(main) == "0.1" ? Lang.ON : Lang.OFF
+    let selected = unmod(main) == "0.1" ? names[1] : names[0]
     return (
     <tr>
     <td>{name}</td>

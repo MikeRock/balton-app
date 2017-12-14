@@ -36,7 +36,7 @@ class TableItemState extends Component {
     getValidationState() {
     let {value} = this.state
     let {limit} = this.props
-    return /\d+(\.\d+)?/.test(this.editRef ? this.editRef.value : value ) && !isNaN(this.editRef ? this.editRef.value : value) && (this.editRef ? this.editRef.value < limit : value < limit) ? 'success' : 'error'    
+    return /\d+(\.\d+)?/.test( value ) && !isNaN(value) && ( Number(value) < Number(limit)) ? 'success' : 'error' 
     }
     render() {
     let {write, name, names, options, value, unmod} = this.props   
@@ -57,7 +57,7 @@ class TableItemState extends Component {
                defaultValue ={this.state.value} 
                value= {this.state.value}  
                inputRef={(ref) => {this.editRef=ref}}
-               onChange={(e) =>{ e.preventDefault(); this.setState({value:this.editRef ? this.editRef.value : e.target.value}) }}>
+               onChange={(e) =>{ e.preventDefault(); this.setState({value: e.target.value}) }}>
       {options.map((option, index) => <option value={option}>{names[index]}</option>)}
                </FormControl>           
        {' '}
@@ -72,7 +72,7 @@ class TableItemState extends Component {
                value= {this.state.value}  
                inputRef={(ref) => {this.editRef=ref}}
                placeholder={Lang.PLACEHOLDER_HOUR}
-               onChange={(e) =>{ e.preventDefault(); this.setState({value:this.editRef ? this.editRef.value : e.target.value}) }}>
+               onChange={(e) =>{ e.preventDefault(); this.setState({value:e.target.value}) }}>
       </FormControl>
       <FormControl.Feedback />
        {' '}

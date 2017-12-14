@@ -3,6 +3,7 @@ export default function (store={analogs:{},integers:{},digitals:{},change:'NONE'
 switch (action.type)
 {
 case Action.FETCH_FAILED:
+console.log('Data failed') 
 return Object.assign({},store) 
 case Action.FETCH_SUCCESS: {
 console.log('Data fetched')    

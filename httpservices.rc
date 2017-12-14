@@ -1,0 +1,724 @@
+#!/bin/sh
+
+#set -x
+
+#
+# Shell script to execute some services as root or other user
+#
+webpath=/usr/local/root/flash/http
+usrcgipath=/usr/local/root/flash/usr-cgi
+#outfile=/var/log/httpsvc.log
+outfile=/dev/httpsvcrep
+syscfgpath="/usr/local/root/flash/etc/sysconfig"
+writablepath=/usr/local/root/flash
+tempdir=/initrd/tmp
+
+SIGRESTORE=38
+SIGWINLOAD=39
+
+echo $$ > /var/run/httpservices.pid
+
+source /etc/profile
+
+
+# nota: si puo' usare i=$(cmd 2>&1) per leggere gli errori su i.
+IFS=""
+
+function proto2pcoload () {
+	local waitsig=0
+	local pcod_pid=$(pidof pcod)
+
+	# Waiting for pcod before switching protocol
+	trap 'signal_arrived=1' SIGUSR1
+		
+	# Exit only with a SIGUSR1 signal or after 10 seconds
+	while [ $waitsig -le 10 -a "$signal_arrived" -eq "0" ]; do
+		if [ $waitsig -eq 0 ]; then
+			# Switch to Winload mode
+			kill -$SIGWINLOAD $pcod_pid
+			echo "Sent SIGWINLOAD to pcod, pid $pcod_pid"
+		fi
+		sleep 1
+		echo -n "." >> $outfile
+		waitsig=$((waitsig+1))
+		echo "Waiting for SIGUSR1 from pcod"
+	done
+
+	# Unset the signal trap, return to default (exit)
+	trap - SIGUSR1
+}
+
+function pcoload2proto () {
+	# Back to Carel or Modbus mode
+	kill -$SIGRESTORE $(pidof pcod)
+
+	rm -f	/tmp/winload_lock \
+		/tmp/winload_connection \
+		/tmp/winload_pcoinfo \
+		/tmp/winload_uploading \
+		/tmp/winload_error \
+		/tmp/winload_libraryinfo
+}
+
+#  Read the system SW1 status on boot
+read BOOTUSERSW < /var/run/.swchecked
+
+while [ 1 ]; do
+    read servCmd < /dev/httpsvc
+    case $servCmd in
+	setattrib)
+
+            resmsg="Changing owner&group for directory (and subdir's in) .../http:      "; r="ok."
+            find $webpath -type d -exec chown httpadmin:httpadmin {} \; || r="Error"
+            resmsg="$resmsg""$r\n""Changing attributes for directory (and subdir's in) /http:     "; r="ok."
+            find $webpath -type d -exec chmod 755 {} \; || r="Error"
+            #find $webpath -type d -print0 | xargs -0 -r chmod 755 || r="Error"
+            resmsg="$resmsg""$r\n""Changing owner&group for files in /http and subdir's:          "; r="ok."
+            find $webpath -type f -exec chown httpadmin:httpadmin {} \; || r="Error"
+            #find $webpath -type f -print0 | xargs -0 -r chown httpadmin:httpadmin || r="Error"
+            resmsg="$resmsg""$r\n""Changing attributes for files in /http and subdir's:           "; r="ok."
+            find $webpath -type f -exec chmod 644 {} \; || r="Error"
+            #find $webpath -type f -print0 | xargs -0 -r chmod 644 || r="Error"
+            resmsg="$resmsg""$r\n""Changing owner&group for directory (and subdir's in) /usr-cgi: "; r="ok."
+            find $usrcgipath -type d -exec chown httpadmin:httpadmin {} \; || r="Error"
+            #find $usrcgipath -type d -print0 | xargs -0 -r chown httpadmin:httpadmin || r="Error"
+            resmsg="$resmsg""$r\n""Changing attributes for directory (and subdir's in) /usr-cgi:  "; r="ok."
+            find $usrcgipath -type d -exec chmod 755 {} \; || r="Error"
+            #find $usrcgipath -type d -print0 | xargs -0 -r chmod 755 || r="Error"
+            resmsg="$resmsg""$r\n""Changing owner&group for files in /usr-cgi and subdir's:       "; r="ok."
+            find $usrcgipath -type f -exec chown httpadmin:httpadmin {} \; || r="Error"
+            #find $usrcgipath -type f -print0 | xargs - 0-r chown httpadmin:httpadmin || r="Error"
+            resmsg="$resmsg""$r\n""Changing attributes for files in /usr-cgi and subdir's:        "; r="ok."
+            find $usrcgipath -type f -exec chmod 755 {} \; || r="Error"
+            #find $usrcgipath -type f -print0 | xargs -0 -r chmod 755 || r="Error"
+            resmsg="$resmsg""$r"
+            echo -e $resmsg > $outfile
+	    ;;
+
+	reloadpwd)
+		if [ "$BOOTUSERSW" != "0" ]; then
+	    	echo -e $(/etc/init.d/usercfg setpasswd 2>&1) > $outfile
+		else
+	    	echo "System is running in default factory mode.<br>Database updated.<br>Values will be active on next reset." > $outfile
+		fi
+	    ;;
+
+	#MAYBE OBSOLETE
+	reloadnet)
+		if [ "$BOOTUSERSW" != "0" ]; then
+	    	msg2=""
+	    	msg1=$(/etc/init.d/usercfg upd_network 2>&1)
+	    	msg2=$(/etc/init.d/net restart 2>&1)
+	    	echo "$msg1<br>$(cat /etc/sysconfig/network)<br>$msg2" > $outfile
+		else
+	    	echo "System is running in default factory mode.<br>Database updated.<br>Values will be active on next reset." > $outfile
+		fi
+	    ;;
+	do_mount)
+	    res=$(mount)
+	    res1=$(df -hP)
+		{
+		echo '<b>Mounted devices</b>'
+		echo '<pre>'"`echo $res`"'</pre>'
+		echo '<br><br><b>Disks space</b>'
+		echo '<pre>'"`echo $res1`"'</pre>'
+		} > $outfile
+	    ;;
+	    
+	do_ifconfig)
+	    res=$(ifconfig)
+	    	{
+		echo '<b>Network Configuration</b>'
+		echo '<pre>'"`echo $res`"'</pre>'
+		} > $outfile
+	    ;;
+
+	do_ping*)
+	    par=${servCmd#*'&'}; par=${par%%'&'*}
+	    if [ $par != "" ]; then
+		res=$(ping -c 3 $par 2>&1)
+	    else
+		res="Empty host is not allowed\nInsert host in input field"
+	    fi
+		{
+		echo '<b>Ping Result</b>'
+	    	echo -e '<pre>'"`echo $res`"'</pre>'
+		} > $outfile
+	    ;;
+
+        do_flashroom)
+		res=$(df -hP /usr/flashdisk)
+            	{
+            	echo '<b>User FlashDisk usage statistic</b>'
+		echo '<pre style="font-family: courier, serif">'"`echo $res`"'</pre>'
+		} > $outfile
+            ;;
+
+        bootvalues)
+            swchecked=$(cat /var/run/.swchecked)
+            if [ "$swchecked" = "1" ]; then
+                    res="User"
+            else
+                    res="Factory"
+            fi
+            echo -n $res > $outfile
+            ;;
+
+        factdefcfg)
+                {
+		echo '<b>Factory Bootswitch Value</b>'
+                echo '<pre>'"`cat /proc/factdefcfg`"'</pre>'
+                } > $outfile
+                ;;
+	
+	do_log)
+		{
+		echo '</pre><pre></pre>'
+		echo '<b>Memory</b>'
+		echo '<pre>'"`cat /proc/meminfo`"'</pre><br>'
+		echo '<b>Boot messages</b>'
+		echo '<pre>'"`htmlcat /var/log/bootmsg`"'</pre><br>'
+		echo '<b>System log</b>'
+		echo '<pre>'"`cat /var/log/messages`"'</pre><br>'
+		} > $outfile
+		;;
+
+	#MAYBE OBSOLETE
+	system_upgrade)
+		sleep 3
+	    kill $(pidof thttpd)
+	    /etc/init.d/snmpd stop
+	    /etc/init.d/pcod stop
+		ftp_id=$(pidof in.ftpd)
+		test "$ftp_id" = "" || kill $ftp_id
+		tln_id=$(pidof in.telnetd)
+		test "$tln_id" = "" || kill $tln_id
+	    umount /usr/local/root/flash
+	    umount /usr/local
+	    /etc/init.d/thttpd stop
+	    ;;
+
+	ifcfg*|userspwd*|snmp*|userdb*)
+	    servFile=${servCmd%%'&'*}
+	    par=${servCmd#*'&'}; par=${par%%'&'*}
+	    oldCmd=$servCmd
+	    servCmd=${servCmd#*'&'}
+	    if [ "$servFile" != "" ]; then
+			test -d "$syscfgpath" || mkdir -p "$syscfgpath"
+			bkFile="$syscfgpath/$servFile.bk"
+			servFile="$syscfgpath/$servFile"
+			rm -f "$bkFile"
+			test -f "$servFile" && mv "$servFile" "$bkFile"
+			echo -n "" > $servFile
+			if [ $? -eq 0 ]; then
+				while [ "$par" != "" -a "$oldCmd" != "$servCmd" ]; do
+					echo $par >> $servFile
+					par=${servCmd#*'&'}; par=${par%%'&'*}
+					oldCmd=$servCmd
+					servCmd=${servCmd#*'&'}
+				done
+				rm -f "$bkFile"
+				cksum "$syscfgpath"/* > "$syscfgpath/.crc"
+				# */
+				echo "Values successfully updated." > $outfile
+			else
+				echo "Can't create $servFile" > $outfile
+			fi
+	    fi
+	    ;;
+
+	reboot*)
+		echo "<h2>Rebooting system... will be up again in about 2 min...</h2>" > $outfile
+		sleep 1
+		/sbin/reboot
+	    ;;
+	emergency*)
+		echo '<h2>Switching to EMERGENCY runlevel</h2><br>Standard HTTP pages will no longer works.' > $outfile
+		#echo '<h2>Switching to EMERGENCY runlevel</h2><br>HTTP pages will no longer works.' > $outfile
+		sleep 2
+		telinit 3
+	    ;;
+	preupload)
+		IFS_OLD=$IFS
+		IFS=" "
+		msg=""
+		msg="$msg""Stopping plugins...\n"
+		source /etc/init.d/userscript stop > /dev/null 2>&1
+		msg="$msg""Stopping Modbus TCP/IP...\n"
+		source /etc/init.d/modbustcp stop > /dev/null 2>&1
+		msg="$msg""Stopping logger...\n"
+		source /etc/init.d/logger stop > /dev/null 2>&1
+		msg="$msg""Stopping event handlers...\n"
+		source /etc/init.d/events stop > /dev/null 2>&1
+		msg="$msg""Stopping snmp server...\n"
+		source /etc/init.d/snmpd stop > /dev/null 2>&1
+		msg="$msg""Stopping internet services...\n"
+		source /etc/init.d/inetd stop > /dev/null 2>&1
+		kill $(pidof -x /var/run/htpasswdd.rc)
+		source /etc/init.d/chketh0d stop > /dev/null 2>&1
+		msg="$msg""Stopping system loggers...\n"
+		source /etc/init.d/syslog stop > /dev/null 2>&1
+		msg="$msg""Cleaning ram from unused files...\n"
+		rm -rf /initrd/tmp/pCO_Application
+		rm -rf $(find /initrd/tmp/ -type f | grep -v -e enable -e flash)
+		echo -e "$msg" > $outfile
+		IFS=$IFS_OLD
+		;;
+	upload_and_reboot)
+	    if [ -r $tempdir/flash.path ]; then
+			read DEVPATH < $tempdir/flash.path
+			DOFLASH=""
+			case "$DEVPATH" in
+			/dev/mtd1)
+				DOFLASH="$DEVPATH"
+				OUT="FLASH_SYS"
+				FILE="NO"
+				;;
+			/usr/flashdisk/dev/romapps.img)
+				DOFLASH="$DEVPATH"
+				OUT="FLASH_APPS"
+				FILE="YES"
+				;;
+			/dev/mtd3)
+				DOFLASH="$DEVPATH"
+				OUT="FLASH_DISK"
+				FILE="NO"
+				;;
+			/dev/mtd0)
+				DOFLASH="$DEVPATH"
+				OUT="FLASH_ALLDEVICE"
+				FILE="NO"
+				;;
+			*)
+				OUT="Unknown device: $DEVPATH.\nOperation aborted."
+				;;
+			esac
+	    else
+			OUT="Temporary file to select device not found."
+	    fi
+	    
+	    if [ "$DOFLASH" != "" ]; then
+		i=$(pidof watchdogd) && kill $i
+			
+		    err=$(cp /usr/local/bin/watchdogd /var/run/) && echo "$err"
+		    if [ "$err" != "" ]; then
+			OUT="$err\nOperation aborted."
+		    else
+	    	        /var/run/watchdogd
+		    fi
+		
+		if [ $(pidof watchdogd) = "" ]; then
+		    OUT="Can't instantiate watchdog daemon"
+		    OUT="$OUT\nOperation aborted."
+		    echo -e "$OUT" > $outfile
+		else
+		    OUT="$OUT selected"
+	    
+		    if [ ! -z "$(pidof webud)" ]; then
+		    	source /etc/init.d/webud stop
+		    fi
+
+		    i=$(pidof sleep) && kill $i
+
+    		    OUT="$OUT\nShutting down services and unmounting volumes"
+		    OUT="$OUT\nSystem will be rebooted in few seconds and it will be up again in about 2 min..."
+		    echo -e "$OUT" > $outfile
+		    sleep 2
+		    source /etc/init.d/termconfd stop
+		    source /etc/init.d/cbg stop
+		    source /etc/init.d/switch_reboot stop
+		    source /etc/init.d/pcod stop
+		    source /etc/init.d/webud stop
+		    source /etc/init.d/pcoledd stop
+
+		    echo "led=red" > /proc/hwio
+
+		    i=$(pidof thttpd) && kill $i
+
+                    err=$(umount /usr/local/root/flash) && echo "$err"
+                    sleep 2
+
+                    err=$(umount /usr/local) && echo "$err"
+                    sleep 2
+
+                    if [ "$FILE" = "YES" ]; then
+	            # FLASH RAM HERE
+    	                # I delete the old cksum file, so i'm sure i'm using the new one
+                        rm /usr/flashdisk/dev/romapps.img.chk
+	                # Copy the just uploaded image to /usr/flashdisk/dev/romapps.img
+	                cp /tmp/flash.image "$DOFLASH"
+	                if [ ! $? -eq "0" ]; then
+	                    for i in 1 2 3 4 5; do
+	                        echo "led=green" > /proc/hwio
+	                        sleep 1
+	                        echo "led=red" > /proc/hwio
+	                        sleep 1
+	                    done
+	                    FILE=NO
+	                else
+	                    chmod 700 "$DOFLASH"
+	                    cd /
+	                    # Clean the ram
+	                    rm -f /tmp/flash.path
+	                    rm -f /tmp/flash.image
+	                    # Create checksum
+		            echo "led=green" > /proc/hwio
+		            cksum /usr/flashdisk/dev/romapps.img > /usr/flashdisk/dev/romapps.img.chk
+		            echo "led=red" > /proc/hwio
+		            sleep 1
+		            echo "led=green" > /proc/hwio
+		        fi
+		    fi
+		    if [ "$FILE" = "NO" ]; then
+		        # If I am upgrading the kernel part or the previous update of romapps.img using
+		        # cp has failed, i use kcp to install the software
+		        echo "kcp $tempdir/flash.image $DOFLASH" > /proc/hwio
+		    fi
+		    while [ $(pidof watchdogd) ]; do
+		        i=$(pidof watchdogd) && kill $i
+		        sleep 5
+		    done
+		    
+		    exit 0
+		fi
+		
+	    else
+			echo -e "$OUT" > $outfile
+	    fi
+	    ;;
+
+	umount_blkflash*)
+		umount /dev/blkflash
+	    ;;
+
+	mount_blkflash*)
+		mount /dev/blkflash
+	    ;;
+	
+	clear_all|clear_keepnet)
+		resmsg="<h1>Cleaning report</h1>"
+		mount /var/backup
+		# $? = 0 ==> mounted
+		# $? = 32 ==> already mounted
+		if [ $? = 0 -o $? = 32 ]; then
+		    find /var/backup/ -type f -print0 | xargs -0 rm -f
+		    resmsg="$resmsg"" - Cleaning backup files<br>"
+		else
+		    resmsg="$resmsg"" ! Error cleaning backup files<br>"
+		fi
+
+		if [ "$servCmd" = "clear_keepnet" ]; then
+			# Keep network configuration
+			resmsg="$resmsg"" - Backup network configuration<br>"
+			cp -f $writablepath/etc/sysconfig/ifcfg $tempdir
+		fi
+
+		# Cleaning files/dir in /usr/local/root/flash/dev/
+                cd $writablepath/dev/
+		for a in *; do
+		    if [ "$a" != "romapps.img" -a "$a" != "romapps.img.chk" ]; then
+			resmsg="$resmsg"" - Cleaning $writablepath/dev/"$a"<br>"
+			rm -Rf "$a" > /dev/null 2>&1
+		    fi
+		done
+
+		# Cleaning dirs in /usr/local/root/flash/
+		cd $writablepath
+		for e in *; do
+		    if [ "$e" != "dev" ]; then
+			resmsg="$resmsg"" - Cleaning $writablepath/$e<br>"
+			rm -Rf "$e" > /dev/null 2>&1
+		    fi
+		done
+
+		/etc/init.d/thttpd check_flash
+
+		if [ "$servCmd" = "clear_keepnet" ]; then
+			# Restore network configuration
+			mv -f $tempdir/ifcfg $writablepath/etc/sysconfig/ifcfg
+			resmsg="$resmsg"" - Restore network configuration<br>"
+		fi
+
+		umount /var/backup
+		resmsg="$resmsg""<h1>System reboot is needed</h1>"
+		echo "$resmsg" > $outfile
+	    ;;
+
+	clear_logger)
+		resmsg="<h1>Cleaning report</h1>"
+		# Cleaning files/dirs in /usr/local/root/flash/http/log
+		cd $writablepath/http/log/
+		for e in *; do
+		    if [ "$e" != "powerup-log.csv" ]; then
+			resmsg="$resmsg"" - Cleaning $writablepath/http/log/$e<br>"
+			rm -Rf "$e" > /dev/null 2>&1
+		    fi
+		done
+		echo "$resmsg" > $outfile
+	    ;;
+	
+	clear_abort)
+		resmsg="<h1>Cleaning report</h1>"
+		resmsg="$resmsg"" - Operation Aborted<br>"
+		echo "$resmsg" > $outfile
+	    ;;
+	
+	installplugin)
+		resmsg="<div style=\"color: black\">Install plugin report:</div><br>"
+		cd $tempdir/install_plugin/
+                rm -Rf `cat dir_to_remove` > /dev/null 2>&1
+		log_install=$(sh install.sh)
+		cd $tempdir
+		rm -Rf install_plugin/ > /dev/null 2>&1
+		echo "$resmsg""$log_install" > $outfile
+	    ;;
+	
+	uninstall_plugin)
+		resmsg="<div style=\"color: black\">Uninstall plugin report:</div><br>"
+		cd $tempdir
+		log_uninstall=$(sh uninstall_script.sh)
+		rm -f uninstall_script.sh > /dev/null 2>&1
+		echo "$resmsg""$log_uninstall" > $outfile
+	    ;;
+	
+	start*)
+		par=${servCmd#*'&'}; par=${par%%'&'*}
+		resmsg="<div style=\"color: black\">Starting service $par...</div>"
+		/etc/init.d/$par start
+		echo "$resmsg""$log" > $outfile
+		;;
+	stop*)
+		par=${servCmd#*'&'}; par=${par%%'&'*}
+		resmsg="<div style=\"color: black\">Stopping service $par:</div>"
+		/etc/init.d/$par stop
+		echo "$resmsg""$log" > $outfile
+		;;
+	usercfg*)
+		par=${servCmd#*'&'}; par=${par%%'&'*}
+		resmsg="<div style=\"color: black\">Updating $par configuration...</div>"
+		/etc/init.d/usercfg $par
+		echo "$resmsg""$log" > $outfile
+		;;
+	rm*)
+		par=${servCmd#*'&'}; par=${par%%'&'*}
+		resmsg="<div style=\"color: black\">Deleting file $par...</div>"
+		echo "deleting file $par"
+		rm -Rf $par
+		echo "$resmsg""$log" > $outfile
+		;;
+	do_kill*)
+		tmp=${servCmd#*"?"}
+
+		app=${tmp%%"&"*}
+		sig1=${tmp#*"&"}
+		sig=${sig1%"&"*}
+		IFS_OLD=$IFS
+		IFS=" "
+		kill $sig $(pidof $app)
+		IFS=$IFS_OLD
+
+		text=${tmp##*"&"}
+		if [ "$text" = "" ]; then
+		    echo "<div style=\"color: black\">Killing $app with signal $sig...done!</div>" > $outfile
+		else
+		    echo "<div style=\"color: black\">$(echo $text | busybox sed 's/%20/\ /g')...done!</div>" > $outfile
+		fi
+		;;
+
+	do_winload)
+		source /usr/local/root/flash/etc/sysconfig/pcoload.conf
+		#echo $SERIAL
+		#echo $PPATH
+		outfile=/tmp/winload
+		RETRY="NO"
+		QUIT="NO"
+		FAILED="NO"
+		
+		rm -f /tmp/winload*
+
+		if [ ! -e /tmp/winload_running ]; then
+			touch /tmp/winload_running #Winload is running
+		fi
+		touch $outfile
+		chmod 777 $outfile
+
+		echo -n "<div style='color: black'>Shutting down pCOWeb applications to free memory..." >> $outfile
+
+		IFS_OLD=$IFS
+		IFS=" "
+		kill $(pidof snmpd pcoftppushd pcotrapd pcomaild termconfd logger syslogd klogd)
+		IFS=$IFS_OLD
+
+		/etc/init.d/userscript stop > /dev/null 2>&1
+
+		echo " [<span style='color: green'>COMPLETED</span>]</div>" >> $outfile
+
+		echo -n "<div style='color: black; padding-top: 10px'>Switching to pCOLoad protocol..." >> $outfile
+
+		signal_arrived=0
+		proto2pcoload
+
+		if [ "$(pidof pcod)" = "" ]; then
+			echo " [<span style='color: red'>INTERNAL ERROR, PLEASE REBOOT</span>]</div>" >> $outfile
+			break
+		fi
+
+		if [ "$signal_arrived" -eq "1" ]; then
+			echo " [<span style='color: green'>OK</span>]</div>" >> $outfile
+
+			export LD_LIBRARY_PATH=/usr/local/lib/
+		
+			if [ -x $BIN_USERS/pcoload ]; then
+				PCOLOAD=$BIN_USERS/pcoload
+			else
+				PCOLOAD=/usr/local/bin/pcoload
+			fi
+			echo "Using $PCOLOAD $SERIAL $PPATH"
+		
+			$PCOLOAD $SERIAL $PPATH &
+			#/usr/local/root/flash/bin_users/pcoload $SERIAL $PPATH &
+
+			#PCOLOADPID=$(pidof pcoload)
+
+			sleep 2
+
+			echo -n "<div style='color: black; padding-top: 10px'>Connecting to pCO..." >> $outfile
+
+			while [ -f /tmp/winload_connection ] && [ ! -z "$(pidof pcoload)" ]; do
+				sleep 1
+				echo -n "." >> $outfile
+			done
+
+			sleep 1
+
+			echo -n " [<span style='color: " >> $outfile
+			if [ ! -f /tmp/winload_pcoinfo ]; then
+				echo -n "red'>" >> $outfile
+				while [ ! -z "$(pidof pcoload)" ]; do
+					sleep 1
+					echo -n "." >> $outfile
+				done
+				if [ -s /tmp/winload_error ]; then
+					cat /tmp/winload_error >> $outfile
+				else
+					echo -n "ERROR" >> $outfile
+				fi
+				echo "</span>]</div>" >> $outfile
+				QUIT="YES"
+				FAILED="YES"
+			else
+				echo "green'>COMPLETED</span>]</div>" >> $outfile
+				FAILED="NO"
+				QUIT="NO"
+			fi
+		else
+			echo " [<span style='color: red'>ERROR</span>]</div>" >> $outfile
+			QUIT="YES"
+			FAILED="YES"
+		fi
+		
+		if [ "$QUIT" != "YES" ]; then
+		
+			while [ ! -s /tmp/winload_pcoinfo ] && [ ! -z "$(pidof pcoload)" ]; do
+				sleep 1
+			done
+		
+			cat /tmp/winload_pcoinfo >> $outfile
+
+			DOTS=60
+			echo -n "<div style='color: black; padding-top: 10px'>Uploading application files to pCO..." >> $outfile
+
+			# Main loop, it will stay here while it finishes to upload the application
+			while [ -f /tmp/winload_uploading ] && [ ! -z "$(pidof pcoload)" ]; do
+				sleep 1
+				if [ $DOTS -gt 99 ]; then
+					echo -n "</div><div style='color: black'>." >> $outfile
+					DOTS=1
+				else
+					echo -n "." >> $outfile
+					DOTS=$[$DOTS + 1]
+				fi
+			done
+		
+			echo -n " [<span style='color: " >> $outfile
+			if [ -f /tmp/winload_error ] || [ -f /tmp/winload_uploading ]; then
+				echo -n "red'>" >> $outfile
+				if [ -s /tmp/winload_error ]; then
+					cat /tmp/winload_error >> $outfile
+				else
+					echo -n "PCOLOAD DIED" >> $outfile
+				fi
+				echo "</span>]</div>" >> $outfile
+				FAILED="YES"
+			else
+				echo "green'>COMPLETED</span>]</div>" >> $outfile
+				FAILED="NO"
+			fi
+		fi
+		
+		echo -n "<div style='color: black; padding-top: 10px'>Rebooting pCO..." >> $outfile
+
+		for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+			sleep 1
+			echo -n "." >> $outfile
+		done
+
+		echo " [<span style='color: green'>COMPLETED</span>]</div>" >> $outfile
+
+		echo -n "<div style='font-weight: bold; padding-top: 20px; padding-bottom: 20px'>Result: <span style='color: " >> $outfile
+		
+		if [ "$FAILED" = "NO" ]; then
+			echo -n "green'>Upload correctly executed!" >> $outfile
+			find $PPATH/ -type f -print0 | xargs -0 rm
+			#rm -rf $PPATH/\*
+		else
+			echo -n "red'>Upload failed, please retry the whole procedure!" >> $outfile
+		fi
+
+		echo "</span></div>" >> $outfile
+		
+		#if [ "$signal_arrived" -eq "1" ]; then
+			echo "<div style='color: black'>Switching back to pCO protocol..." >> $outfile
+			pcoload2proto
+			echo "[<span style='color: green'>OK</span>]</div>" >> $outfile
+		#fi
+
+		echo "<div style='color: black; padding-top: 10px'>Restarting all pCOWeb applications..." >> $outfile
+
+		/etc/init.d/snmpd start > /dev/null
+		/etc/init.d/events start > /dev/null
+		/etc/init.d/termconfd start > /dev/null
+		/etc/init.d/logger start > /dev/null
+		/etc/init.d/syslog start > /dev/null
+		/etc/init.d/userscript start > /dev/null
+
+		echo "[<span style='color: green'>COMPLETED</span>]</div>" >> $outfile
+
+		rm -f /tmp/winload_running
+		outfile=/dev/httpsvcrep
+		;;
+
+	do_passwd)
+		IFS_OLD=$IFS
+		IFS=]
+		read kuser nuser kdir ndir kpwd npwd < /dev/htpasswd
+		if [ "$kuser" = "u" -a "$kdir" = "d" -a "$kpwd" = "p"  ]; then
+			echo $npwd | /usr/sbin/htpasswd -c "$ndir/.htpasswd" "$nuser" > $outfile
+			chown httpadmin:httpadmin "$ndir/.htpasswd"
+		fi
+		IFS=$IFS_OLD
+		;;
+	debug_email)
+		if [ -f /tmp/.emaildebug ]; then
+			# pCOWeb was already in debug, going back to normal
+			/etc/init.d/pcomaildbg restart > $outfile
+		else
+			# pCOWeb going to debug
+			/etc/init.d/pcomaildbg debug > $outfile
+		fi
+		;;
+	*)
+	    echo "$0: Invalid argument '$servCmd'" > $outfile
+	    ;;
+    esac
+done
